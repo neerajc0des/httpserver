@@ -1,2 +1,5 @@
 /.vscode
-/server
+
+*.o
+*.out 
+server
