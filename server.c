@@ -24,7 +24,6 @@
 // send SIGCHLD(signal number) to the parent process.
 void sigchild_handler(int s){
     (void) s;   // intentionally ignoring s, to avoid compiler warnings
-
     // waitpid() might overwrite errno, so we save and restore it:
     int saved_errno = errno;
 
@@ -47,6 +46,42 @@ void *get_in_addr(struct sockaddr *sa){
     }
 }
 
+
+struct httpres{
+    int status_code;    
+    const char *status_text;
+    const char *content_type;  // for text/img
+    size_t content_len; // length of the content
+    unsigned char *body;// body to send in the response can contain img
+    int close_connection;
+};
+
+int make_headers(char *header_buf, size_t header_size, struct httpres *res){
+    return snprintf(header_buf, header_size,
+                    "HTTP/1.1 %d %s\r\n"
+                    "Content-Type: %s\r\n"
+                    "Connection: %s\r\n"      // sending one response at a time and closing the connection after it
+                    "Content-Length: %zu\r\n" // %z for the dtype of size_t and %u stands for unsigned int
+                    "\r\n",
+                    res->status_code,
+                    res->status_text,
+                    res->content_type,
+                    res->close_connection?"close":"keep-alive",  
+                    res->content_len
+                );
+}
+
+const char *get_content_type(const char *f_name){
+    const char *lastDot = strrchr(f_name, '.');
+
+    if(strcmp(lastDot, ".html")==0)
+        return "text/html";
+    if(strcmp(lastDot, ".jpg")==0 || strcmp(lastDot, ".jpeg")==0)
+        return "image/jpeg";
+    if(strcmp(lastDot, ".png")==0)
+        return "image/png";
+}
+
 //listen on socketfd, and all new connections on newfd;
 // getaddrinfo -> socket -> bind -> listen -> accept
 int main(){
@@ -60,7 +95,7 @@ int main(){
     int yes=1;  // used with setsockopt()
     char s[INET6_ADDRSTRLEN];   // taking size of v6(largest)
     int rv;     // return value of getaddrinfo
-    char buf[MAXDATASIZE];
+    char req_buf[MAXDATASIZE];
     int bytes;
 
     memset(&hints, 0, sizeof hints);    //empltying the hints linked list
@@ -95,7 +130,7 @@ int main(){
             continue;
         }
 
-        break;
+        break;  // break as soon as we connects to first available ip
     }
     freeaddrinfo(servinfo);
 
@@ -139,19 +174,36 @@ int main(){
             close(sockfd);
 
             // recieving the request from the client
-            if((bytes = recv(newfd, buf, sizeof(buf)-1, 0))==-1){
+            if((bytes = recv(newfd, req_buf, sizeof(req_buf)-1, 0))==-1){
                 perror("recv");
             }
-            buf[bytes] = '\0';
+            req_buf[bytes] = '\0';
             if(bytes>=0){
-                printf("request recieved:\n%s\n", buf);
+                printf("request recieved:\n%s\n", req_buf);
+            }
+
+            char method[8];
+            char path[256];
+            char version[16];
+
+            // read text from the request and store them in the above buffers
+            // %s read until space, %255s read upto 255 characters, %15s read upto 15characters
+            sscanf(req_buf, "%s %255s %15s", method, path, version);
+
+            char *f_path;
+            if(strcmp(path, "/")==0){
+                f_path = "index.html";
+            }
+            else{
+                f_path = path + 1;
             }
 
             // declaring our response buffer;
-            char res[BUFSIZ];
+            // char res[BUFSIZ];
+            char header_buf[BUFSIZ];
 
             // creating a index file descriptor
-            FILE *fp = fopen("index.html", "rb");
+            FILE *fp = fopen(f_path, "rb");
             if(!fp){
                 perror("fopen");
                 return 1;
@@ -182,25 +234,27 @@ int main(){
             }
             fclose(fp);
 
-            // creating the response
-            int resLen = snprintf(res, sizeof(res),
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html\r\n"
-                "Connection: close\r\n" // sending one response at a time and closing the connection after it
-                "Content-Length: %zu\r\n"   // %z for the dtype of size_t and %u stands for unsigned int
-                "\r\n"                       
-                "%s",                       
-                f_size,
-                rawhtml
-            );
+            struct httpres response;
+            response.status_code = 200;
+            response.status_text = "OK";
+            response.content_type = get_content_type(f_path);
+            response.content_len = f_size;
+            response.close_connection = 1;
+            response.body = (unsigned char *)rawhtml;
+
+            int header_len = make_headers(header_buf, sizeof(header_buf), &response);
 
             // sending the response 
-            if(send(newfd, res, resLen, 0)==-1){
-                perror("send");
+            if(send(newfd, header_buf, header_len, 0)==-1){
+                perror("header send");
+            }
+            if(send(newfd, response.body, response.content_len, 0)==-1){
+                perror("body send");
             }
             // if(send(newfd, "Hello, World!\n", 14, 0)==-1){
             //     perror("send");
             // }
+            free(rawhtml);
             close(newfd);
             exit(0);
         }
