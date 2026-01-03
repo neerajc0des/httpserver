@@ -182,6 +182,7 @@ int main(){
                 printf("request recieved:\n%s\n", req_buf);
             }
 
+            // stripping the recieved request
             char method[8];
             char path[256];
             char version[16];
@@ -189,20 +190,21 @@ int main(){
             // read text from the request and store them in the above buffers
             // %s read until space, %255s read upto 255 characters, %15s read upto 15characters
             sscanf(req_buf, "%s %255s %15s", method, path, version);
+            //     read_from, format      , buffers to store in ...
 
             char *f_path;
             if(strcmp(path, "/")==0){
                 f_path = "index.html";
             }
             else{
-                f_path = path + 1;
+                f_path = path + 1;  // to ignore the '/'in the start
             }
 
             // declaring our response buffer;
             // char res[BUFSIZ];
             char header_buf[BUFSIZ];
 
-            // creating a index file descriptor
+            // creating a file descriptor
             FILE *fp = fopen(f_path, "rb");
             if(!fp){
                 perror("fopen");
@@ -214,47 +216,48 @@ int main(){
             size_t f_size = ftell(fp);  // getting the position
             fseek(fp, 0, SEEK_SET); // rewinding to the start
 
-            // declaring our indexFile buffer
-            char *rawhtml = malloc(f_size);
+            // declaring our file buffer
+            char *httpbody = malloc(f_size);
 
             // checking if memory allocation failed, man!
-            if (!rawhtml) {
+            if (!httpbody) {
                 perror("malloc");
                 fclose(fp);
                 return 1;
             }
 
             // reading the file into our file buffer
-            if(fread(rawhtml, 1, f_size, fp) != f_size){
+            if(fread(httpbody, 1, f_size, fp) != f_size){   //each item is 1byte long
                 // error handling
                 perror("fread");
-                free(rawhtml);
+                free(httpbody);
                 fclose(fp);
                 return 1;
             }
             fclose(fp);
-
+            
+            // structuring the http response 
             struct httpres response;
             response.status_code = 200;
             response.status_text = "OK";
             response.content_type = get_content_type(f_path);
             response.content_len = f_size;
             response.close_connection = 1;
-            response.body = (unsigned char *)rawhtml;
+            response.body = (unsigned char *)httpbody;
 
+            // making headers
             int header_len = make_headers(header_buf, sizeof(header_buf), &response);
 
-            // sending the response 
+            // sending the http headers separately
             if(send(newfd, header_buf, header_len, 0)==-1){
                 perror("header send");
             }
+            // sending the http body
             if(send(newfd, response.body, response.content_len, 0)==-1){
                 perror("body send");
             }
-            // if(send(newfd, "Hello, World!\n", 14, 0)==-1){
-            //     perror("send");
-            // }
-            free(rawhtml);
+            
+            free(httpbody);
             close(newfd);
             exit(0);
         }
